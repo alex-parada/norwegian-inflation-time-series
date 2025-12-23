@@ -523,4 +523,10 @@ lines(fY)
 
 ## Conclusions
 
-In short, the AR(2) model is the one who fits the inflation data  better, although the prediction with the ARCH(1) model was not bad either. There are several factors supporting this conclusion: firstly, the estimated parameters seem quite reasonable and are relatively consistent between models and the confidence intervals of the AR(2) model where quite tight; secondly, the Q-Q of the AR(2) model shows a better diagonal than in the ARCH(1) case; and lastly, the forecasting of the AR(2) model was not
+In short, the AR(2) model is the one who fits the inflation data  better, although the prediction with the ARCH(1) model was not bad either. There are several factors supporting this conclusion: firstly, the estimated parameters seem quite reasonable and are relatively consistent between models and the confidence intervals of the AR(2) model where quite tight; secondly, the Q-Q of the AR(2) model shows a better diagonal than in the ARCH(1) case; and lastly, the forecasting of the AR(2) model was not only closer to the real data but also showed a more consistent pattern, adjusting better to the recorded data.
+
+Finally, as we already explained, the migration coefficient was quite small, thus, we cannot expect a huge migration-dependence of the inflation. In conclusion, our results have been satisfactory, and our analysis successful.
+
+```{r}
+sessionInfo()
+```
