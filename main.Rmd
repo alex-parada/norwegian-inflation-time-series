@@ -1,0 +1,526 @@
+---
+title: "Modelling and Forecasting Norwegian's Inflation Rate using Time Series"
+author: "Alex Parada Prestamo"
+output:
+  bookdown::pdf_document2:
+    toc: true
+    number_sections: true
+  bookdown::html_document2:
+    toc: true
+    number_sections: true
+---
+
+```{r, include=FALSE}
+if (!require(knitr)) {
+  install.packages("knitr")
+  library(knitr)
+}
+
+knitr::opts_chunk$set(
+  echo = TRUE,
+  warning = FALSE,
+  message = FALSE,
+  fig.path = "figures/",
+  fig.width = 7,
+  fig.height = 5,
+  dpi = 300
+)
+
+set.seed(123)
+```
+
+## Goal of the project
+
+*Modelling and forecasting of the Norwegian inflation rate with time series models from the ARIMA and GARCH families, and studying its dependence with three previously chosen covariates.*
+
+## Introduction
+First, we had to obtain the data. In order to do that, we used the provided data bases in https://www.ssb.no/en/priser-og-prisindekser/konsumpriser/statistikk/konsumprisindeksen.
+
+The inflation data is the following:
+```{r}
+# CPI DATA (monthly)
+CPIdata <- read.csv("data/CPIdata.csv", header = FALSE, sep = ";", dec = ".")
+colnames(CPIdata) <- CPIdata[3, ]
+CPIdata <- CPIdata[-c(1,2), 2:3]
+rownames(CPIdata) <- NULL
+tail(CPIdata)
+```
+
+```{r fig-cpi, fig.cap="CPI", warning=FALSE}
+par(mfrow=c(1,1))
+plot(CPIdata$`Monthly change (per cent)`, type="l",
+     main="Monthly CPI Inflation",
+     ylab="Percent", xlab="Time")
+```
+
+After analyzing several factors (internal and external, economic and social), we decided to use the following variables as covariates for our future model: net migration (https://www.ssb.no/en/statbank/table/06913), which we will simply denote as *migration*; housing prices (https://www.ssb.no/en/statbank/table/0722), denoted by *housing*; and a series we created by subtracting the volume of imports (https://www.ssb.no/en/statbank/table/09189) and the volume of exports (https://www.ssb.no/en/statbank/table/09189), which will be called *net exports*.
+
+It is important to note now that the mentioned data is not in the same time frame (e.g. one series starts from 1951, another from 1992, etc.), in addition to having a different structure (recorded by months, quarters or years). Therefore, we will rescale all our data into being partitioned by quarters and in the time frame where we have data for all our chosen covariates, 1992Q1 to 2022Q4.
+
+### Data Import and Cleaning
+```{r, warning=FALSE}
+NetMigration=read.csv("data/NetMigration.csv",header=F,sep=";",dec=".")
+colnames(NetMigration)<-NetMigration[3,]
+NetMigration=NetMigration[-c(1,2),2:3]
+rownames(NetMigration)<-NULL
+tail(NetMigration)  # 1951-2022, YEARS
+```
+
+```{r, warning=FALSE}
+Housing=read.csv("data/Housing.csv",header=F,sep=";",dec=".")
+colnames(Housing)<-Housing[2,]
+Housing=Housing[-(1:3),-(1:2)]
+rownames(Housing)<-NULL
+tail(t(Housing))  # 1992-2023Q3, QUARTERS - modified later
+```
+
+```{r}
+Imp_volume=read.csv("data/Imp_volume.csv",header=F,sep=";",dec=".")
+colnames(Imp_volume)<-Imp_volume[3,]
+Imp_volume=Imp_volume[-c(1,2),2:3]
+rownames(Imp_volume)<-NULL
+tail(Imp_volume)  # 1989-2023Q3, QUARTERS
+```
+
+```{r}
+Exp_volume=read.csv("data/Exp_volume.csv",header=F,sep=";",dec=".")
+colnames(Exp_volume)<-Exp_volume[3,]
+Exp_volume=Exp_volume[-c(1,2),2:3]
+rownames(Exp_volume)<-NULL
+tail(Exp_volume)  #FROM 1989-2023Q3, QUARTERS
+```
+
+```{r fig-exports-imports, fig.cap = "Export and import data", warning=FALSE}
+plot(Exp_volume$`Volume index`, type="l", col="red", ylim = c(0, 200), xlim = c(0, nrow(Exp_volume)), ylab = "Volume")
+lines(Imp_volume$`Volume index`, type="l", col="blue", ylim = c(0, 200), xlim = c(0, nrow(Imp_volume)))
+legend(
+  "topleft",
+  legend = c("Exports", "Imports"),
+  col = c("red", "blue"),
+  lty = 1,
+  bty = "n"
+)
+```
+
+*Transform data:*
+```{r, warning=FALSE}
+# MAKE ALL DATA INTO QUARTERLY AND TILL 2023Q3
+QNetMigration=c()
+for (i in 1:(nrow(NetMigration)-1)){
+  QNetMigration[c((4*i-3):(4*i))]=as.numeric(NetMigration[i,2])/4
+}
+QNetMigration=c(QNetMigration,rep(NA,3))
+
+QCPIdata=c()
+for (i in 1:(nrow(CPIdata)/3)){
+  QCPIdata[i]=sum(as.numeric(CPIdata[c((3*i-2):(3*i)),2]))
+}
+QCPIdata=QCPIdata[-c((length(QCPIdata)-2):length(QCPIdata))]
+Housing=Housing[-c((length(Housing)-2):length(Housing))]
+Imp_volume=Imp_volume[-c((nrow(Imp_volume)-2):nrow(Imp_volume)),]
+Exp_volume=Exp_volume[-c((nrow(Exp_volume)-2):nrow(Exp_volume)),]
+```
+
+```{r, warning=FALSE}
+# NOW ALL DATA IS QUARTERLY AND SET TO INCLUDE UP TO 2023Q3
+QCPIdata=c(rep(NA,length(QNetMigration)-length(QCPIdata)),QCPIdata)
+QHousing=c(rep(NA,length(QNetMigration)-ncol(Housing)),as.numeric(Housing))
+QImp_volume=c(rep(NA,length(QNetMigration)-nrow(Imp_volume)),
+    as.numeric(Imp_volume[,2]))
+QExp_volume=c(rep(NA,length(QNetMigration)-nrow(Exp_volume)),
+    as.numeric(Exp_volume[,2]))
+
+dataAll=as.data.frame(rbind(QCPIdata, QNetMigration, QHousing, 
+    QImp_volume, QExp_volume, QExp_volume-QImp_volume))
+
+colnames(dataAll)=seq(1951,2023.5,by=0.25)
+dataAll=t(dataAll)
+```
+
+*Final Dataset:*
+
+```{r}
+# Restrict to period with complete data (from 1993Q3)
+data <- dataAll[172:(nrow(dataAll)-3), ]
+colnames(data) <- c("CPI", "Migration", "Housing","Imports", "Exports", "NetExports")
+
+cpi  <- data[,"CPI"] #Inflation
+hous <- data[,"Housing"] #Housing
+mig  <- data[,"Migration"] #Net Migration
+net  <- data[,"NetExports"] #Exports - Imports
+```
+
+*Plot all the covariates:*
+```{r fig-covariates, fig.cap = "Covariates ploted over the years"}
+#PLOT OF THE COVARIATES
+par(mfrow=c(3,1))
+plot(mig, type = "l",xaxt="n",xlab="Year",ylab="NetMigration")
+axis(1,at=1:nrow(data),labels=rownames(data))
+plot(hous, type = "l",xaxt="n",xlab="Year",ylab='Housing')
+axis(1,at=1:nrow(data),labels=rownames(data))
+plot(net, type = "l",xaxt="n",xlab="Year",ylab="Net exports")
+axis(1,at=1:nrow(data),labels=rownames(data))
+```
+
+## Model estimation and diagnosis
+
+We will consider the following *regression* model:
+$$
+y_t=\mu + \beta_H H_t + \beta_M M_t + \beta_N N_t + x_t
+$$
+where $y_t$ is the time series of the inflation (CPI); $\mu$ is the intercept parameter, which can be interpreted as the mean factor of the model; $H_t$, $M_t$ and $N_t$ are the housing, migration and net exportation time series respectively, and $x_t$ is a time series process, which will let us try different models to fit the data. Looking at the covariates plot in  Figure \@ref(fig:fig-covariates), one can be tempted to try differentiating some of the covariates (e.g. housing), hoping that they would adjust and/or behave more similar to the CPI data. Nevertheless, we tried this but did not obtain better results. Lastly, recall that the inflation data in Figure \@ref(fig:fig-cpi) seems to be stationary, thus we will not differentiate it (over-differentiation could lead to problems).
+
+Assuming, only at this point, that the series $x_t$ is white noise, we can calculate the coefficients $\beta_H,\beta_M$ and $\beta_N$ by running a linear regression:
+```{r}
+#STEP 1: Run an ordinary regression
+Y=cpi
+X=cbind(1,hous,mig,net)
+beta=solve((t(X) %*% X)) %*% t(X) %*% Y
+beta
+res=Y-X %*% beta
+```
+
+The ARMA model can be identified from the residuals:
+```{r fig-hist-res, fig.cap="Residuals ARMA"}
+#STEP 2: Identify ARMA model
+par(mfrow=c(2,1))
+plot(res)
+hist(res,breaks=50)
+```
+
+```{r fig-acf-pacf-res, fig.cap="ACF and PACF of the residuals"}
+acf(res, lag.max = 150)
+pacf(res, lag.max = 150)
+```
+
+In order to choose a model for $x_t$, we plot the ACF and PACF of the residuals derived from the linear regression. We will first assume an AR(2) model because of the two lines exceeding the 95\% intervals in the PACF plot.
+
+### AR(2)
+#### Estimation
+Therefore, assuming that $x_t$ is: 
+$$x_t=\phi_1 x_{t-1}+\phi_2 x_{t-2}+w_t$$
+
+where $\phi_1$ and $\phi_2$ are the AR model coefficients and $w_t$ is white noise:
+```{r}
+#AR(2) Estimation
+n=length(cpi)
+objective_function <- function(params, Y, X) {
+  betav <- params[1:4]
+  ar1 <- params[5]
+  ar2 <- params[6]
+  ar=c(ar2,ar1,1)
+  
+  b=(Y[1]-(X%*%betav)[1])^2
+  b=b+(Y[2]-ar1*Y[1]-(X%*%betav)[2]-((ar1*X)%*%betav)[1])^2
+  for (i in 3:n){
+    a=Y[i]-ar1*Y[i-1]-ar2*Y[i-2]-cbind(1,(ar%*%X[(i-2):i,2:4]))%*%betav
+    b=b+a^2
+  }
+  
+  return(b)
+}
+initial_params <- c(beta, c(-0.5, -0.5))
+optim_result <- optim(par = initial_params, fn = objective_function, 
+    Y = Y, X = X, method = "BFGS", hessian=T)
+```
+
+```{r}
+estimated_params <- optim_result$par; estimated_params
+```
+
+```{r}
+estimated_AR2betas <- optim_result$par[1:4]; estimated_AR2betas
+```
+```{r}
+estimated_AR2phis <- optim_result$par[5:6]; estimated_AR2phis
+```
+```{r}
+hessian_matrix <- optim_result$hessian
+cov_matrix <- solve(hessian_matrix)
+standard_errors <- sqrt(diag(cov_matrix))
+standard_errors
+```
+
+*AR(2) model parameters estimation and their standard errors:*
+
+|            | Intercept | **β_H** | **β_M** | **β_N** | **φ₁** | **φ₂** |
+|------------|-----------|---------|---------|---------|--------|--------|
+| Estimation | 0.14      | 0.0159  | 2.6·10⁻⁵ | 0.0147  | -0.080 | -0.190 |
+| St. errors | 0.23      | 0.0061  | 3.0·10⁻⁵ | 0.0067  | 0.092  | 0.096  |
+
+The coefficient of the migration series is quite small, this can suggest that the CPI does not necessarily depend on the migration. The other coefficients are more reasonable. Nevertheless, we can see that the uncertainties are high. To better check our results, we will calculate the 95\% intervals.
+
+```{r}
+# Calculate 95% confidence intervals for parameters
+alpha <- 0.05  # Significance level
+z_value <- qnorm(1 - alpha / 2)  # Z-score for two-tailed test
+
+lower_bounds <- estimated_params - z_value * standard_errors
+upper_bounds <- estimated_params + z_value * standard_errors
+confidence_intervals <- cbind(lower_bounds, upper_bounds);
+confidence_intervals
+```
+
+The intervals are quite tight and, in half of the cases, do not contain zero. We can consider then that our coefficients were properly estimated and, except maybe for the migration, the choice of our covariates was appropriate.
+
+#### Diagnosis
+```{r fig-res-ar2-diagnosis}
+#STEP 4.1: Diagnostic - check if residuals are normal and independent
+r1=rep(NA,n)
+r1[1]=Y[1]-(X%*%estimated_AR2betas)[1]
+r1[2]=Y[2]-estimated_AR2phis[1]*Y[1]-
+    (X%*%estimated_AR2betas)[2]
+for (i in 3:n){
+  r1[i]=Y[i]-estimated_AR2phis[1]*Y[i-1]-
+  estimated_AR2phis[2]*Y[i-2]-(X%*%estimated_AR2betas)[i]
+}
+
+plot(r1, main = "Residual Plot", ylab="Residuals")
+```
+
+In order to diagnose the model we will check if the innovations (residuals) obtained in the model's fit are Gaussian and independent. To check the Gaussian behaviour, we will plot them in a histogram and compare them to the Gaussian curve, Figure \@ref(fig:fig-residual-arma), one can easily see that the residuals have a similar behaviour to the Gaussian. Moreover, in Figure \@ref(fig:fig-hist-normal-arma), a simulation of a normal distribution (with the same sample size as our residuals) is made. Our data is quite similar to what we could expect if they were normally distributed, thus, we can say that the residuals are Gaussian.
+
+
+```{r fig-residual-arma, fig.cap="Residuals of the ARMA model"}
+#Gaussian
+hist(r1,breaks=50,freq=FALSE,
+    main='Scaled innovations compared to standard normal distribution',
+    xlab='Residuals')
+x.values <- seq(from=-3., to=3., length.out = 50)
+lines(x = x.values, y = dnorm(x.values, mean=0., sd=1.))
+```
+
+```{r fig-hist-normal-arma, fig.cap="Histogram of an equivalent normal distribution"}
+n=length(r1)
+hist(rnorm(n,0,1),breaks=50,freq=FALSE,
+    main='Histogram of an equivalent normal distribution')  
+lines(x = x.values, y = dnorm(x.values, mean=0., sd=1.))
+```
+
+Analogously, to study the time dependence of the residuals we will plot their ACF and PACF and compare it to a normally distributed analog. Regarding Figure \@ref(fig:fig-acf-pacf-residuals-arma), we can see what we expect for white noise: a value of 1 at lag zero in the ACF and values close to zero for larger lags (indeed, they are between the 95\% intervals, supporting the white noise hypothesis). The analogous simulation with the Gaussian sample, Figure \@ref(fig:fig-acf-pacf-normal-arma), reaffirms our findings.
+
+```{r fig-acf-pacf-residuals-arma, fig.cap="ACF and PACF of model residuals"}
+#Independent
+par(mfrow=c(2,1))
+acf(r1,lag.max=150,main='Residuals')
+pacf(r1,lag.max=150,main='')    
+```
+
+```{r fig-acf-pacf-normal-arma, fig.cap="ACF and PACF of a normal distribution"}
+par(mfrow=c(2,1))
+acf(rnorm(n=length(r1)), lag.max=150, main='Normal distribution')  
+pacf(rnorm(n=length(r1)), lag.max=150, main='') 
+```
+
+Furthermore, a Q-Q plot, Figure \@ref(fig:fig-arma-qq), sums up the effectiveness of our results, since the points are approximately a diagonal line and the extreme points are not specially deviated from the others. 
+```{r fig-arma-qq, fig.cap="AR(2) Q-Q Plot"}
+#qq plot
+par(mfrow=c(1,1))
+qqnorm(r1, main = "Model AR(2) Q-Q Plot")
+```
+
+We can conclude then that the residuals of modelling the inflation rate are independent and Gaussian, as we intended to verify.
+
+### ARCH(1)
+#### Estimation
+In the model presented in above's equation: 
+$$
+y_t=\mu + \beta_H H_t + \beta_M M_t + \beta_N N_t + x_t
+$$
+we will assume now that $x_t$ is an ARCH(1) model:
+$$
+    x_t =\sigma_t \epsilon_t
+$$
+$$
+    \sigma_t^2 =\alpha_0 +\alpha_1 x_{t-1}^2
+$$
+where $\epsilon_t$ is standard Gaussian white noise, and $\alpha_0, \alpha_1$ are the parameters of the model. 
+```{r}
+n=length(cpi)
+objective_function2 <- function(alphas, Y) {
+  alpha0 <- alphas[1]
+  alpha1 <- alphas[2]
+  
+  return(sum(log(alpha0+alpha1*Y[1:n-1]^2)+
+  (Y[2:n]^2)/(alpha0+alpha1*Y[1:n-1]^2))/2)
+}
+initial_alphas <- c(0.5, 0.5)
+optim_alphas <- optim(par = initial_alphas, fn = objective_function2,
+    Y = Y, method = "L-BFGS-B", lower=0)
+```
+
+```{r}
+estimated_alphas <- optim_alphas$par; estimated_alphas
+```
+```{r}
+estimated_alpha0 <- estimated_alphas[1]
+estimated_alpha1 <- estimated_alphas[2]
+
+objective_function <- function(params, Y, X) {
+  betav <- params
+  
+  b=(Y[1]-(X%*%betav)[1]-
+  rnorm(1,0,sqrt(estimated_alpha0/(1-estimated_alpha1))))^2
+  b=b+sum(Y[2:n]-(X%*%betav)[2:n]-sqrt(estimated_alpha0+
+    estimated_alpha1*Y[1:n-1]^2)*rnorm(1,0,1))^2
+  
+  return(b)
+}
+initial_params <- beta
+optim_result <- optim(par = initial_params, fn = objective_function, 
+    Y = Y, X = X, method = "BFGS", hessian=T)
+```
+
+```{r}
+estimated_ARCH1betas <- optim_result$par; estimated_ARCH1betas
+```
+
+*Estimation of the ARCH(1) model parameters:*
+
+| Intercept | **β_H** | **β_M** | **β_N** | **α₀** | **α₁** |
+|-----------|---------|---------|---------|--------|--------|
+| 0.0069     | 0.0120  | -2.88·10⁻⁵ | 0.0121 | 0.6784 | 0.0671 |
+
+It is now important to note two things: firstly,  the confidence intervals can not be calculated since the covariance matrix is not defined positive; and secondly, since in the ARCH(1) model we use random white noise, every time we compile the code, we get slightly different results for the parameters. Analogously to the AR(2) model, the value of the migration coefficient is small, suggesting again that maybe the CPI is not migration-dependent.
+
+#### Diagnosis
+Similarly to the AR(2) diagnosis, we will check the independence and the normal behaviour of the estimation residuals. In this case we see that, even though our residuals show more or less a Gaussian bell shape, the randomness induced by $\epsilon_t$ prevents it from fitting completely, see histogram \@ref(fig:fig-hist-residuals-arch).
+
+```{r}
+r2=rep(NA,n)
+r2[1]=Y[1]-(X%*%estimated_ARCH1betas)[1]-rnorm(1,0,sqrt(estimated_alpha0 / 
+    (1 - estimated_alpha1)))
+r2[2:n]=Y[2:n]-(X%*%estimated_ARCH1betas)[2:n]-
+sqrt(estimated_alpha0+estimated_alpha1*Y[1:n-1]^2)*rnorm(1,0,1)
+```
+
+```{r fig-hist-residuals-arch, fig.cap="Histogram of the innovations"}
+#Gaussian
+par(mfrow=c(1,1))
+hist(r2,breaks=50,freq=FALSE,
+    main='Scaled innovations compared to standard normal distribution',
+    xlab='Residuals')
+x.values <- seq(from=-3., to=3., length.out = 50)
+lines(x = x.values, y = dnorm(x.values, mean=0., sd=1.))
+```
+
+```{r fig-hist-normal-distribution}
+n=length(r2)
+hist(rnorm(n,0,1),breaks=50,freq=FALSE,
+    main='Histogram of an equivalent normal distribution')  
+lines(x = x.values, y = dnorm(x.values, mean=0., sd=1.))
+```
+
+Looking again at the ACF of the residuals, Figure \@ref(fig:fig-acf-residuals-arch), we definitely see the expected white noise ACF. 
+
+```{r fig-acf-residuals-arch, fig.cap="ACF and PACF of model residuals and of a normal distribution"}
+#Independent
+par(mfrow=c(2,1))
+acf(r2,lag.max=150,main='Residuals')
+acf(rnorm(n=length(r2)), lag.max=150, main='Normal distribution') 
+```
+
+Finally, we also analyze the Q-Q plot, Figure \@ref(fig:fig-qq-arch), in which we see a reasonable diagonal slope with some deviation with the extreme values, thus concluding that our residuals behave in an expected manner.
+
+```{r fig-qq-arch, fig.cap="ARCH(1) Q-Q Plot"}
+#qq plot
+par(mfrow=c(1,1))
+qqnorm(r2, main = "Model ARCH(1) Q-Q Plot")
+```
+
+## Forecasting
+We will now consider values of our covariates until the third quarter of 2023 (due to the lack of values for the migration covariate, we will complete it with recent values we found: https://www.ssb.no/en/statbank/table/01222). This means that we should define our complete dataset again (before we were working with data until 2022Q4):
+```{r}
+tail(dataAll)
+# FIRST, GET THE VARIABLES UP TO 2023Q3 AND FILL IN NAs WITH SOMETHING
+fcpi<-dataAll[172:nrow(dataAll),1]
+fmig<-dataAll[172:nrow(dataAll),2] #Net Migration
+fhous<-dataAll[172:nrow(dataAll),3] #Housing
+fnet<-dataAll[172:nrow(dataAll),6] #Exports-Imports
+
+fmig[(length(fmig)-2):length(fmig)]=(14587+6344+15679)/3
+#from the new recent data in the webpage
+
+fY=fcpi
+fX=cbind(1,fhous,fmig,fnet)
+fn=length(fY)
+```
+
+### AR(2)
+The forecast using AR(2) for the CPI data up till 2023 is showed in Figures \@ref(fig:fig-forecast-arma-5) and \@ref(fig:fig-forecast-arma-20) (red). By comparing with the real values recorded (black), we can see that the forecast follows the same trend, albeit with less variation, and so we can conclude that our parameter estimation was successful.
+
+**Forecasting of the last 5 time-points: **
+```{r}
+#AR2 FORECASTING of last k quarters (from 2023Q3)
+k=5
+prAR2=rep(NA,k); YprAR2=Y
+for (i in 1:k){
+  prAR2[i]=estimated_AR2phis[1]*YprAR2[fn-k+i-1]+
+  estimated_AR2phis[2]*YprAR2[fn-k+i-2]+(fX%*%estimated_AR2betas)[(fn-k+i)]
+  YprAR2=c(Y[1:(length(Y)-k+3)],prAR2)
+}
+```
+
+```{r fig-forecast-arma-5, fig.cap="AR(2) forecast of the last 5 time-points"}
+par(mfrow=c(1,1))
+plot(YprAR2,type="l",col="red",ylab='CPI')
+lines(fY)
+```
+**Forecasting of the last 20 time-points: **
+```{r}
+k=20
+prAR2=rep(NA,k); YprAR2=Y
+for (i in 1:k){
+  prAR2[i]=estimated_AR2phis[1]*YprAR2[fn-k+i-1]+
+  estimated_AR2phis[2]*YprAR2[fn-k+i-2]+(fX%*%estimated_AR2betas)[(fn-k+i)]
+  YprAR2=c(Y[1:(length(Y)-k+3)],prAR2)
+}
+```
+
+```{r fig-forecast-arma-20, fig.cap="AR(2) forecast of the last 20 time-points"}
+par(mfrow=c(1,1))
+plot(YprAR2,type="l",col="red",ylab='CPI')
+lines(fY)
+```
+
+### ARCH(1)
+Following the same procedure as in the AR(2) case, we will predict the last 5 and 20 values (red) and compare them with the recorded values (black). In Figures \@ref(fig:fig-forecast-arch-5) and \@ref(fig:fig-forecast-arch-20), we can see that the variation can change considerably, thus resulting in a more erratic prediction. 
+
+**Forecasting of the last 5 time-points: **
+```{r}
+#ARCH1 FORECASTING of last k quarters (from 2023Q3)
+k=5
+prARCH1=rep(NA,k); YprARCH1=Y
+for (i in 1:k){
+  prARCH1[i]=(fX%*%estimated_ARCH1betas)[fn-k+i]-sqrt(estimated_alpha0+
+  estimated_alpha1*YprARCH1[fn-k+i-1]^2)*rnorm(1,0,1)
+  YprARCH1=c(Y[1:(length(Y)-k+3)],prARCH1)
+}
+```
+
+```{r fig-forecast-arch-5, fig.cap="ARCH(1) forecast of the last 5 time-points"}
+par(mfrow=c(1,1))
+plot(YprARCH1,type="l",col="red",ylab='CPI') 
+lines(fY)
+```
+
+**Forecasting of the last 20 time-points: **
+```{r}
+k=20
+prARCH1=rep(NA,k); YprARCH1=Y
+for (i in 1:k){
+  prARCH1[i]=(fX%*%estimated_ARCH1betas)[fn-k+i]-
+  sqrt(estimated_alpha0+estimated_alpha1*YprARCH1[fn-k+i-1]^2)*rnorm(1,0,1)
+  YprARCH1=c(Y[1:(length(Y)-k+3)],prARCH1)
+}
+```
+
+```{r fig-forecast-arch-20, fig.cap="ARCH(1) forecast of the last 20 time-points"}
+par(mfrow=c(1,1))
+plot(YprARCH1,type="l",col="red",ylab='CPI') #RANDOM, recordemos
+lines(fY)
+```
+
+## Conclusions
+
+In short, the AR(2) model is the one who fits the inflation data  better, although the prediction with the ARCH(1) model was not bad either. There are several factors supporting this conclusion: firstly, the estimated parameters seem quite reasonable and are relatively consistent between models and the confidence intervals of the AR(2) model where quite tight; secondly, the Q-Q of the AR(2) model shows a better diagonal than in the ARCH(1) case; and lastly, the forecasting of the AR(2) model was not
