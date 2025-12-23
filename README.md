@@ -61,4 +61,3 @@ A random seed is set where stochastic simulation is involved.
 
 ## Author
 **Alex Parada Prestamo**
-# norwegian-inflation-time-series
