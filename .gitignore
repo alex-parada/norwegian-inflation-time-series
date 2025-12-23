@@ -1,0 +1,16 @@
+# R stuff
+.Rhistory
+.RData
+.Rproj.user/
+
+# macOS
+.DS_Store
+
+# Outputs
+figures/
+
+# LaTeX / bookdown junk
+*.log
+*.tex
+_main.Rmd
+
