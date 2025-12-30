@@ -43,7 +43,7 @@ Links to the original sources are provided directly in the R Markdown document.
 - `data/`: Raw CSV data files
 - `scripts/`: Optional helper functions
 - `output/`: Rendered HTML and PDF reports
-- `figures/`: Saved figures (if applicable)
+- `figures/`: Saved figures
 
 ## Reproducibility
 To reproduce the results:
